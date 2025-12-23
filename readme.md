@@ -44,4 +44,6 @@ docker run --rm \
   -v $(pwd)/output:/tmp \
   trustlogix-analyzer
 ```
+
+### 5. Detailed Documentation and Diagrams via DeepWiki
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/SThornell11/atlan-trustlogix-access-analyzer)

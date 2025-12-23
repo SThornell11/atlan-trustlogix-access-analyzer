@@ -1,0 +1,4 @@
+requests
+atlan-application-sdk
+jinja2
+pandas

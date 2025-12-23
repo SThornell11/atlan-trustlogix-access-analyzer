@@ -1,0 +1,50 @@
+kind: WorkflowTemplate
+metadata:
+  name: trustlogix-access-analyzer
+  namespace: default
+  labels:
+    package: trustlogix-analyzer
+    application: true
+  annotations:
+    atlan.com/icon: https://trustlogix.io/favicon.ico
+    atlan.com/display-name: "TrustLogix Access Analyzer"
+spec:
+  templates:
+    - name: main
+      inputs:
+        parameters:
+          - name: trustlogix_base_url
+          - name: trustlogix_tenant_id
+          - name: auth_method
+          - name: trustlogix_api_key
+            value: ""
+          - name: client_id
+            value: ""
+          - name: client_secret
+            value: ""
+      container:
+        image: ghcr.io/your-org/trustlogix-analyzer:v1
+        command: ["python", "/app/src/main.py"]
+        env:
+          - name: TRUSTLOGIX_BASE_URL
+            value: "{{inputs.parameters.trustlogix_base_url}}"
+          - name: TRUSTLOGIX_TENANT_ID
+            value: "{{inputs.parameters.trustlogix_tenant_id}}"
+          - name: AUTH_METHOD
+            value: "{{inputs.parameters.auth_method}}"
+          - name: TRUSTLOGIX_API_KEY
+            value: "{{inputs.parameters.trustlogix_api_key}}"
+          - name: CLIENT_ID
+            value: "{{inputs.parameters.client_id}}"
+          - name: CLIENT_SECRET
+            value: "{{inputs.parameters.client_secret}}"
+          - name: ATLAN_BASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: atlan-creds
+                key: base-url
+          - name: ATLAN_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: atlan-creds
+                key: api-key

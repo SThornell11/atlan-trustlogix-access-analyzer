@@ -6,8 +6,8 @@ metadata:
     package: trustlogix-analyzer
     application: true
   annotations:
-    atlan.com/icon: https://trustlogix.io/favicon.ico
-    atlan.com/display-name: "TrustLogix Access Analyzer"
+    atlan.com/icon: https://cdn.prod.website-files.com/689aca9a00606d8ac05c62da/689b795e2e53ca91d8ff157e_TrustLogix_Dark_Logo.svg
+    atlan.com/display-name: "TrustLogix Data Access Governance"
 spec:
   templates:
     - name: main
@@ -15,6 +15,8 @@ spec:
         parameters:
           - name: trustlogix_base_url
           - name: trustlogix_tenant_id
+          - name: atlan_api_key
+            value: ""
           - name: auth_method
           - name: trustlogix_api_key
             value: ""
@@ -23,28 +25,25 @@ spec:
           - name: client_secret
             value: ""
       container:
-        image: ghcr.io/your-org/trustlogix-analyzer:v1
+        image: cr.atlan.com/trustlogix/trustlogix-analyzer:latest
         command: ["python", "/app/src/main.py"]
         env:
           - name: TRUSTLOGIX_BASE_URL
             value: "{{inputs.parameters.trustlogix_base_url}}"
           - name: TRUSTLOGIX_TENANT_ID
             value: "{{inputs.parameters.trustlogix_tenant_id}}"
+          # Mapped from User Input
+          - name: ATLAN_API_KEY
+            value: "{{inputs.parameters.atlan_api_key}}"
           - name: AUTH_METHOD
             value: "{{inputs.parameters.auth_method}}"
-          - name: TRUSTLOGIX_API_KEY
-            value: "{{inputs.parameters.trustlogix_api_key}}"
           - name: CLIENT_ID
             value: "{{inputs.parameters.client_id}}"
           - name: CLIENT_SECRET
             value: "{{inputs.parameters.client_secret}}"
+          # Base URL still injected from context secret (standard practice)
           - name: ATLAN_BASE_URL
             valueFrom:
               secretKeyRef:
                 name: atlan-creds
                 key: base-url
-          - name: ATLAN_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: atlan-creds
-                key: api-key

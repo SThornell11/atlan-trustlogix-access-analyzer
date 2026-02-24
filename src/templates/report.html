@@ -2,211 +2,168 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TrustLogix Access Analyzer</title>
-    
+    <title>TrustLogix Data Access Governance</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
-        tailwind.config = {
-            theme: {
-                extend: { colors: { trustlogix: '#1a5653' } }
-            }
-        }
-    </script>
-    <style>
-        .tree-line { border-left: 1px solid #e5e7eb; margin-left: 0.75rem; padding-left: 0.75rem; }
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { background: #f1f1f1; }
-        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-        [x-cloak] { display: none !important; }
-    </style>
-
-    <!-- INJECT DATA FIRST -->
-    <script>
-        try {
-            window.APP_DATA = {
-                source: {{ data_source | tojson | safe }},
-                tree: {{ tree_data | tojson | safe }}
-            };
-        } catch (e) {
-            console.error("Data injection failed", e);
-            window.APP_DATA = { source: "Error", tree: [] };
-        }
-
-        function analyzer() {
-            return {
-                dataSource: window.APP_DATA.source,
-                data: window.APP_DATA.tree,
-                selected: null,
-                showDebug: false,
-
-                selectObject(obj) { this.selected = obj; },
-                
-                getIconColor(type) {
-                    if (type === 'DOMAIN') return 'text-trustlogix';
-                    if (type === 'ACCOUNT') return 'text-purple-600';
-                    return 'text-gray-500';
-                }
-            }
-        }
+        tailwind.config = { theme: { extend: { colors: { trustlogix: '#1a5653' } } } }
     </script>
     <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script>window.reportData = {{ tree_data | tojson | safe }};</script>
+    <style>
+        .tree-line { border-left: 1px solid #e5e7eb; margin-left: 0.75rem; padding-left: 0.75rem; }
+        [x-cloak] { display: none !important; }
+    </style>
 </head>
-<body class="bg-gray-50 text-gray-800 font-sans" x-data="analyzer()" x-cloak>
+<body class="bg-gray-50 text-gray-800 font-sans min-h-screen flex flex-col" x-data="{ selected: null, data: window.reportData }" x-init="if(data.length > 0 && data[0].children.length > 0) selected = data[0].children[0]">
 
-    <div class="bg-trustlogix border-b border-teal-800 shadow-md sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-6 py-3 flex justify-between items-center">
-            <div class="flex items-center gap-4">
-                <div class="flex items-center gap-2">
-                    <div class="grid grid-cols-3 gap-0.5 w-6 h-6 rotate-45 transform origin-center">
-                        <div class="bg-cyan-400 w-1.5 h-1.5 rounded-[1px]"></div><div class="bg-cyan-400 w-1.5 h-1.5 rounded-[1px]"></div><div class="bg-cyan-400 w-1.5 h-1.5 rounded-[1px]"></div>
-                        <div class="bg-teal-400 w-1.5 h-1.5 rounded-[1px]"></div><div class="bg-teal-400 w-1.5 h-1.5 rounded-[1px]"></div><div class="bg-teal-400 w-1.5 h-1.5 rounded-[1px]"></div>
-                        <div class="bg-green-400 w-1.5 h-1.5 rounded-[1px]"></div><div class="bg-green-400 w-1.5 h-1.5 rounded-[1px]"></div><div class="bg-green-400 w-1.5 h-1.5 rounded-[1px]"></div>
-                    </div>
-                    <span class="text-white text-xl font-semibold tracking-wide ml-1">
-                        TRUSTLOGI<span class="text-green-400">X</span>
-                    </span>
-                </div>
-                <div class="h-6 w-px bg-teal-700 mx-2"></div>
-                <span class="text-teal-100 text-sm font-medium tracking-wide uppercase">Atlan Domains & Assets Access Analyzer</span>
-            </div>
-            
-            <div class="flex items-center gap-3">
-                <button @click="showDebug = !showDebug" class="text-[10px] text-teal-200 hover:text-white underline cursor-pointer">Debug</button>
-                <div class="text-xs text-teal-100 bg-teal-900/30 px-3 py-1.5 rounded-md border border-teal-700/50">
-                    Scope: <span class="font-bold text-white" x-text="dataSource"></span>
-                </div>
-            </div>
+    <div class="bg-[#6DBE4A] border-b border-[#4a9c2e] shadow-md sticky top-0 z-50 p-3 flex justify-between items-center">
+        <div class="flex items-center gap-4">
+            <img src="https://cdn.prod.website-files.com/689aca9a00606d8ac05c62da/689b795e2e53ca91d8ff157e_TrustLogix_Dark_Logo.svg" alt="TrustLogix" class="h-8" />
+            <span class="text-sm font-semibold tracking-wide text-[#1a5653] uppercase border-l border-[#4a9c2e] pl-4">Data Access Governance</span>
         </div>
     </div>
+    <div class="flex-grow flex gap-6 p-6 overflow-hidden">
+        <!-- SIDEBAR -->
+        <div class="w-1/3 bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col max-h-[calc(100vh-120px)] overflow-y-auto p-4">
+            <template x-for="domain in data" :key="domain.name">
+                <div class="mb-6" x-data="{ domExp: true }">
+                    <!-- ATLAN DOMAIN LEVEL -->
+                    <div @click="domExp = !domExp" class="flex items-center gap-2 mb-2 cursor-pointer group">
+                        <svg class="w-4 h-4 text-trustlogix transform transition-transform" :class="domExp ? 'rotate-90' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M9 5l7 7-7 7" stroke-width="3" /></svg>
+                        <span class="font-black text-[10px] uppercase tracking-widest text-gray-400 group-hover:text-trustlogix" x-text="domain.name"></span>
+                    </div>
 
-    <div class="max-w-7xl mx-auto px-6 py-8 flex gap-6 h-[calc(100vh-64px)]">
-        
-        <!-- TREE -->
-        <div class="w-1/3 bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col">
-            <div class="p-4 border-b border-gray-100 bg-gray-50/50 rounded-t-lg">
-                <!-- UPDATED HEADER TEXT HERE -->
-                <h2 class="text-xs font-bold text-gray-500 uppercase tracking-wider">Atlan Domains & Hierarchy</h2>
-            </div>
-            
-            <div class="flex-1 overflow-y-auto p-4">
-                <template x-for="domain in data" :key="domain.name">
-                    <div class="mb-6">
-                        <!-- DOMAIN HEADER -->
-                        <div class="flex items-center gap-2 mb-2 pb-1 border-b border-gray-100">
-                            <span class="text-sm font-bold text-gray-800 uppercase tracking-wide" x-text="domain.name"></span>
-                            <span class="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full" x-text="domain.children.length + ' Acc'"></span>
-                        </div>
-
-                        <!-- ACCOUNTS (Children of Domain) -->
-                        <div class="pl-2">
-                            <template x-for="account in domain.children" :key="account.name">
-                                <div class="mb-2" x-data="{ expanded: false }">
-                                    <div @click="selectObject(account); expanded = !expanded" 
-                                         class="cursor-pointer hover:bg-gray-50 p-2 rounded flex items-center gap-2 select-none"
-                                         :class="selected?.name === account.name ? 'bg-teal-50 text-teal-900 border border-teal-100' : ''">
-                                        
-                                        <svg class="w-3 h-3 text-gray-400 transform transition-transform" :class="expanded ? 'rotate-90' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M9 5l7 7-7 7" /></svg>
-                                        
-                                        <div class="p-1 rounded bg-white border border-gray-100">
-                                            <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
-                                        </div>
-                                        
-                                        <div class="flex-1 min-w-0">
-                                            <div class="font-semibold text-sm truncate" x-text="account.name"></div>
-                                            <div class="text-[10px] uppercase font-bold tracking-wider text-gray-400" x-text="account.subtype"></div>
-                                        </div>
+                    <div class="tree-line" x-show="domExp">
+                        <template x-for="acc in domain.children" :key="acc.name">
+                            <div class="mb-4 ml-2" x-data="{ accExp: true }">
+                                <!-- SNOWFLAKE ACCOUNT LEVEL (TRUSTLOGIX ACCOUNT) -->
+                                <div @click="selected = acc; accExp = !accExp" class="cursor-pointer flex items-center gap-2 p-2 rounded-lg hover:bg-gray-50 border border-transparent transition-all" :class="selected === acc ? 'bg-teal-50 border-teal-100' : ''">
+                                    <div class="w-6 h-6 rounded flex items-center justify-center font-black text-[10px] text-white shadow-sm" :class="(acc.subtype || '').toLowerCase().includes('snowflake') ? 'bg-blue-600' : 'bg-orange-500'">
+                                        <span x-text="(acc.subtype || '').toLowerCase().includes('snowflake') ? 'S' : 'D'"></span>
                                     </div>
+                                    <span class="font-bold text-sm truncate text-gray-700" x-text="acc.name"></span>
+                                </div>
 
-                                    <!-- DATABASES -->
-                                    <div class="tree-line mt-1" x-show="expanded">
-                                        <template x-for="db in account.children" :key="db.name">
-                                            <div class="mb-1" x-data="{ expanded: false }">
-                                                <div @click="selectObject(db); expanded = !expanded" class="cursor-pointer hover:bg-gray-50 p-1 rounded flex items-center gap-2 text-sm text-gray-600">
-                                                    <svg class="w-3 h-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>
-                                                    <span x-text="db.name"></span>
-                                                </div>
-                                                
-                                                <!-- SCHEMAS -->
-                                                <div class="tree-line" x-show="expanded">
-                                                    <template x-for="schema in db.children" :key="schema.name">
-                                                        <div class="mb-1" x-data="{ expanded: false }">
-                                                            <div @click="selectObject(schema); expanded = !expanded" class="cursor-pointer hover:bg-gray-50 p-1 rounded flex items-center gap-2 text-xs text-gray-500">
-                                                                <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
-                                                                <span x-text="schema.name"></span>
-                                                            </div>
-
-                                                            <!-- TABLES -->
-                                                            <div class="tree-line" x-show="expanded">
-                                                                <template x-for="table in schema.children" :key="table.name">
-                                                                    <div @click="selectObject(table)" class="cursor-pointer hover:bg-green-50 p-1 rounded flex items-center gap-2 text-xs text-gray-500" :class="selected?.name === table.name ? 'bg-green-100 text-green-800' : ''">
-                                                                        <svg class="w-3 h-3 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
-                                                                        <span x-text="table.name"></span>
-                                                                    </div>
-                                                                </template>
-                                                            </div>
-                                                        </div>
-                                                    </template>
-                                                </div>
+                                <div class="tree-line mt-2" x-show="accExp">
+                                    <template x-for="sub in acc.children" :key="sub.name">
+                                        <div class="mb-1" x-data="{ subExp: false }">
+                                            <div @click="selected = sub; subExp = !subExp" class="cursor-pointer p-1.5 text-xs font-semibold hover:text-teal-600 flex items-center gap-2" :class="selected === sub ? 'text-teal-700 font-bold' : ''">
+                                                <span x-text="sub.name"></span>
+                                                <template x-if="sub.type === 'RISKS_CONTAINER' && sub.risks && sub.risks.length > 0">
+                                                    <span class="bg-red-500 text-white text-[9px] px-1.5 rounded-full" x-text="sub.risks.length"></span>
+                                                </template>
                                             </div>
-                                        </template>
+
+                                            <!-- ACCESS ANALYZER TREE (DB > SCHEMA > TABLE) -->
+                                            <div class="tree-line mt-1 ml-2" x-show="subExp && sub.type === 'ACCESS_CONTAINER'">
+                                                <template x-for="db in sub.children" :key="db.name">
+                                                    <div class="mb-1" x-data="{ dbExp: false }">
+                                                        <div @click.stop="selected = db; dbExp = !dbExp" class="p-1 text-xs cursor-pointer hover:bg-gray-100 flex items-center gap-1 rounded" :class="selected === db ? 'bg-teal-50 text-teal-700 font-semibold' : ''">
+                                                            <svg class="w-3 h-3 text-gray-400 transform transition-transform" :class="dbExp ? 'rotate-90' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M9 5l7 7-7 7" stroke-width="2" /></svg>
+                                                            <span x-text="db.name"></span>
+                                                        </div>
+                                                        <div class="tree-line ml-2" x-show="dbExp">
+                                                            <template x-for="sch in db.children" :key="sch.name">
+                                                                <div x-data="{ schExp: false }">
+                                                                    <div @click.stop="selected = sch; schExp = !schExp" class="p-1 text-[11px] cursor-pointer hover:text-teal-600 flex items-center gap-1" :class="selected === sch ? 'text-teal-700 font-semibold' : ''">
+                                                                        <svg class="w-2.5 h-2.5 text-gray-300 transform transition-transform" :class="schExp ? 'rotate-90' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M9 5l7 7-7 7" stroke-width="2" /></svg>
+                                                                        <span x-text="sch.name"></span>
+                                                                    </div>
+                                                                    <div class="tree-line ml-2" x-show="schExp">
+                                                                        <template x-for="tbl in sch.children" :key="tbl.name">
+                                                                            <div @click.stop="selected = tbl" class="p-1 text-[10px] text-gray-500 cursor-pointer hover:bg-green-50 rounded" :class="selected === tbl ? 'bg-green-100 text-green-800 font-bold' : ''" x-text="tbl.name"></div>
+                                                                        </template>
+                                                                    </div>
+                                                                </div>
+                                                            </template>
+                                                        </div>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- DETAILS PANEL -->
+        <div class="w-2/3 bg-white rounded-xl shadow-sm border border-gray-200 p-8 overflow-y-auto min-h-[calc(100vh-120px)]">
+            <template x-if="selected">
+                <div class="animate-in fade-in duration-300">
+                    <div class="flex justify-between items-start border-b pb-6 mb-8">
+                        <div>
+                            <span class="text-[10px] font-black text-gray-400 uppercase tracking-widest" x-text="selected.type"></span>
+                            <h2 class="text-3xl font-black tracking-tight" x-text="selected.name"></h2>
+                        </div>
+                        <template x-if="selected.risks_summary">
+                            <div class="flex gap-4">
+                                <div class="px-4 py-2 bg-red-50 border border-red-100 rounded-lg text-center">
+                                    <div class="text-red-600 font-black text-xl" x-text="selected.risks_summary.high"></div>
+                                    <div class="text-[9px] font-bold text-red-400 uppercase">High</div>
+                                </div>
+                                <div class="px-4 py-2 bg-green-50 border border-green-100 rounded-lg text-center">
+                                    <div class="text-green-600 font-black text-xl" x-text="selected.risks_summary.total"></div>
+                                    <div class="text-[9px] font-bold text-green-400 uppercase">Total</div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- RISKS VIEW -->
+                    <template x-if="selected.type === 'RISKS_CONTAINER'">
+                        <div class="space-y-4">
+                            <template x-for="r in (selected.risks || [])">
+                                <div class="p-4 border rounded-xl hover:shadow-md transition-all">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <span class="font-black text-xs uppercase px-2 py-0.5 bg-gray-100 rounded" x-text="r.category"></span>
+                                        <span class="px-2 py-0.5 rounded-full text-[9px] font-bold border border-red-200 text-red-600" x-text="r.severity"></span>
                                     </div>
+                                    <div class="text-xs font-bold text-gray-800 mb-1" x-text="r.raw_name"></div>
+                                    <p class="text-sm text-gray-600 leading-relaxed" x-text="r.details"></p>
+                                </div>
+                            </template>
+                            <template x-if="!selected.risks || selected.risks.length === 0">
+                                <div class="py-20 text-center flex flex-col items-center">
+                                    <div class="w-16 h-16 bg-green-50 rounded-full flex items-center justify-center text-green-500 mb-4">
+                                        <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke-width="2" /></svg>
+                                    </div>
+                                    <h3 class="font-black text-xl text-gray-900">Data Access Governance Verified</h3>
+                                    <p class="text-gray-400 text-sm mt-1">No security risks detected for this environment.</p>
                                 </div>
                             </template>
                         </div>
-                    </div>
-                </template>
-            </div>
-        </div>
+                    </template>
 
-        <!-- Details -->
-        <div class="w-2/3 bg-white rounded-lg shadow-sm border border-gray-200 p-8">
-            <template x-if="selected">
-                <div>
-                    <h2 class="text-2xl font-bold text-gray-900 mb-6" x-text="selected.name"></h2>
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead class="bg-gray-50">
-                            <tr>
-                                <th class="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Entity</th>
-                                <th class="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Type</th>
-                                <th class="px-6 py-3 text-left text-xs font-bold text-gray-500 uppercase">Privileges</th>
-                            </tr>
-                        </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                            <template x-for="ent in selected.entitlements" :key="ent.name">
-                                <tr>
-                                    <td class="px-6 py-4 text-sm font-medium text-gray-900" x-text="ent.name"></td>
-                                    <td class="px-6 py-4 text-xs">
-                                        <span class="px-2 py-1 rounded-full text-white font-bold"
-                                              :class="{'bg-purple-500': ent.entity_type==='ROLE', 'bg-blue-500': ent.entity_type==='USER', 'bg-orange-500': ent.entity_type==='GROUP'}"
-                                              x-text="ent.entity_type"></span>
-                                    </td>
-                                    <td class="px-6 py-4">
-                                        <div class="flex flex-wrap gap-1">
-                                            <template x-for="priv in ent.privileges">
-                                                <span class="px-2 py-0.5 rounded bg-gray-100 text-xs text-gray-600 border" x-text="priv"></span>
-                                            </template>
-                                        </div>
-                                    </td>
-                                </tr>
-                            </template>
-                            <tr x-show="!selected.entitlements || selected.entitlements.length === 0">
-                                <td colspan="3" class="px-6 py-4 text-center text-gray-400 italic">No entitlements found</td>
-                            </tr>
-                        </tbody>
-                    </table>
+                    <!-- ACCESS TABLE -->
+                    <template x-if="['DATABASE','SCHEMA','TABLE'].includes(selected.type)">
+                        <div class="border rounded-xl overflow-hidden shadow-sm">
+                            <table class="min-w-full text-xs">
+                                <thead class="bg-gray-50 font-black uppercase text-gray-500 border-b">
+                                    <tr><th class="px-6 py-4 text-left">Role / User</th><th class="px-6 py-4 text-left">Direct Privileges</th></tr>
+                                </thead>
+                                <tbody class="divide-y">
+                                    <template x-for="ent in (selected.entitlements || [])">
+                                        <tr class="hover:bg-gray-50">
+                                            <td class="px-6 py-4 font-bold" x-text="ent.name"></td>
+                                            <td class="px-6 py-4 flex flex-wrap gap-1">
+                                                <template x-for="p in ent.privileges"><span class="bg-gray-100 px-2 py-0.5 rounded border border-gray-200" x-text="p"></span></template>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                    <tr x-show="!selected.entitlements || selected.entitlements.length === 0">
+                                        <td colspan="2" class="px-6 py-10 text-center text-gray-400 italic">No direct entitlements discovered at this level.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </template>
                 </div>
             </template>
-            <template x-if="!selected">
-                <div class="flex items-center justify-center h-full text-gray-400">Select an item</div>
-            </template>
         </div>
-    </div>
-    
-    <!-- Debug -->
-    <div x-show="showDebug" class="fixed bottom-0 left-0 right-0 bg-gray-900 text-green-400 p-4 font-mono text-xs h-48 overflow-auto z-50">
-        <pre x-text="JSON.stringify(data, null, 2)"></pre>
     </div>
 </body>
 </html>

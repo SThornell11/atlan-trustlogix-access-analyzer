@@ -16,7 +16,7 @@
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans min-h-screen flex flex-col" x-data="{ selected: null, data: window.reportData }" x-init="if(data.length > 0 && data[0].children.length > 0) selected = data[0].children[0]">
 
-    <div class="bg-[#6DBE4A] border-b border-[#4a9c2e] shadow-md sticky top-0 z-50 p-3 flex justify-between items-center">
+    <div style="background-color: #ffffff; border-bottom: 3px solid #6DBE4A;" class="shadow-sm sticky top-0 z-50 p-3 flex justify-between items-center">
         <div class="flex items-center gap-4">
             <img src="https://cdn.prod.website-files.com/689aca9a00606d8ac05c62da/689b795e2e53ca91d8ff157e_TrustLogix_Dark_Logo.svg" alt="TrustLogix" class="h-8" />
             <span class="text-sm font-semibold tracking-wide text-[#1a5653] uppercase border-l border-[#4a9c2e] pl-4">Data Access Governance</span>
@@ -155,7 +155,10 @@
                                         </tr>
                                     </template>
                                     <tr x-show="!selected.entitlements || selected.entitlements.length === 0">
-                                        <td colspan="2" class="px-6 py-10 text-center text-gray-400 italic">No direct entitlements discovered at this level.</td>
+                                        <td colspan="2" class="px-6 py-10 text-center text-gray-400 italic">
+                                            <span x-show="selected.type === 'TABLE'">No direct entitlements discovered for this table.</span>
+                                            <span x-show="selected.type !== 'TABLE'">No direct entitlements at this level — expand to view table-level access below.</span>
+                                        </td>
                                     </tr>
                                 </tbody>
                             </table>

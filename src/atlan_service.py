@@ -23,14 +23,16 @@ class AtlanClient:
     #  The existing 3 in Atlan use: "Total Risks", "High Severity", "Risk Details"
     #  The 5 new ones will be added with isOptional=true.
     # --------------------------------------------------------------------------
+    # showInOverview: "true" makes the attribute visible in the asset Overview tab
+    # (not just under the dedicated Custom Metadata section)
     ATTR_DEFS = {
-        "total_risks":      ("Total Risks",      "int",    {}),
-        "high_severity":    ("High Severity",     "int",    {}),
+        "total_risks":      ("Total Risks",      "int",    {"showInOverview": "true"}),
+        "high_severity":    ("High Severity",     "int",    {"showInOverview": "true"}),
         "medium_severity":  ("Medium Severity",   "int",    {}),
         "low_severity":     ("Low Severity",      "int",    {}),
         "risk_categories":  ("Risk Categories",   "string", {}),
-        "last_scanned":     ("Last Scanned",      "string", {}),
-        "scan_status":      ("Scan Status",       "string", {}),
+        "last_scanned":     ("Last Scanned",      "string", {"showInOverview": "true"}),
+        "scan_status":      ("Scan Status",       "string", {"showInOverview": "true"}),
         "risk_details":     ("Risk Details",      "string", {"customType": "textarea"}),
     }
     REQUIRED_ATTRS = list(ATTR_DEFS.keys())
@@ -63,7 +65,7 @@ class AtlanClient:
         },
     }
 
-    LOGO_URL = "https://cdn.prod.website-files.com/689aca9a00606d8ac05c62da/689b795e2e53ca91d8ff157e_TrustLogix_Dark_Logo.svg"
+    LOGO_URL = "https://cdn.prod.website-files.com/689aca9a00606d8ac05c62da/68d41cadacdc5e5594480d4b_TrustLogix_favicon_32x32.png"
 
     def __init__(self):
         self.logger = logging.getLogger("AtlanClient")
@@ -160,25 +162,50 @@ class AtlanClient:
     # ------------------------------------------------------------------ #
     #  Image Upload
     # ------------------------------------------------------------------ #
+    def _ensure_logo_downloaded(self):
+        """Download the logo PNG from CDN if not already present locally."""
+        if os.path.exists(self._logo_small) and os.path.getsize(self._logo_small) > 0:
+            return True
+        os.makedirs(self._logo_dir, exist_ok=True)
+        try:
+            self.logger.info(f"Downloading logo from CDN: {self.LOGO_URL}")
+            res = requests.get(self.LOGO_URL, timeout=15)
+            if res.status_code == 200 and res.content:
+                with open(self._logo_small, "wb") as f:
+                    f.write(res.content)
+                self.logger.info(f"Logo saved to {self._logo_small} ({len(res.content)} bytes)")
+                return True
+            self.logger.warning(f"CDN download returned {res.status_code}")
+        except Exception as e:
+            self.logger.warning(f"Logo download failed: {e}")
+        return False
+
     def upload_images(self):
-        if not os.path.exists(self._logo_small):
-            self.logger.info("Logo file not found — set icon in Atlan UI manually.")
+        if not self._ensure_logo_downloaded():
+            self.logger.info("Logo unavailable — BM icon will be set via URL fallback.")
             return None
         try:
             headers = {"Authorization": f"Bearer {self.api_token}"}
-            with open(self._logo_small, "rb") as f:
-                files = {"file": ("trustlogix_logo_small.png", f, "image/png")}
-                res = requests.post(
-                    f"{self.base_url}/api/meta/images/upload",
-                    headers=headers, files=files, timeout=self._TIMEOUT
+            # Try field names used by different Atlan versions
+            for field_name in ["file", "image", "logo"]:
+                with open(self._logo_small, "rb") as f:
+                    files = {field_name: ("trustlogix_logo_small.png", f, "image/png")}
+                    res = requests.post(
+                        f"{self.base_url}/api/meta/images/upload",
+                        headers=headers, files=files, timeout=self._TIMEOUT
+                    )
+                if res.status_code in [200, 201]:
+                    data = res.json() if res.text.strip() else {}
+                    img_id = (data.get("id") or data.get("imageId") or
+                              data.get("guid") or data.get("imageGuid"))
+                    if img_id:
+                        self.logger.info(f"Uploaded logo (field='{field_name}'), imageId: {img_id}")
+                        return img_id
+                    self.logger.debug(f"Upload OK but no id in response: {data}")
+                    return None
+                self.logger.debug(
+                    f"Logo upload (field='{field_name}') returned {res.status_code}: {res.text[:200]}"
                 )
-            if res.status_code in [200, 201]:
-                data = res.json() if res.text.strip() else {}
-                img_id = data.get("id") or data.get("imageId") or data.get("guid")
-                if img_id:
-                    self.logger.info(f"Uploaded logo, imageId: {img_id}")
-                    return img_id
-            self.logger.debug(f"Logo upload returned {res.status_code}: {res.text[:300]}")
         except Exception as e:
             self.logger.debug(f"Logo upload failed: {e}")
         return None
@@ -186,7 +213,68 @@ class AtlanClient:
     # ================================================================== #
     #  BM DEFINITION MANAGEMENT
     # ================================================================== #
-    def ensure_metadata_def(self):
+    # Attributes that should be pinned to the asset Overview tab
+    _OVERVIEW_ATTRS = {"Total Risks", "High Severity", "Last Scanned", "Scan Status"}
+
+    def _update_bm_def_options(self, bm_def, image_id=None):
+        """Update logo + showInOverview flags on an existing BM definition via PUT.
+
+        Combines both updates into a single PUT to avoid extra round-trips.
+        Skips entirely if nothing has changed.
+        """
+        current_opts = bm_def.get("options") or {}
+        desired_logo = image_id or self.LOGO_URL
+        current_logo = current_opts.get("imageId") or current_opts.get("logoUrl")
+        logo_changed = current_logo != desired_logo
+
+        # Inspect existing attribute defs for missing showInOverview flags
+        updated_attrs = []
+        attrs_changed = False
+        for attr_def in bm_def.get("attributeDefs", []):
+            attr_copy = dict(attr_def)
+            opts = dict(attr_copy.get("options") or {})
+            if (attr_def.get("displayName") in self._OVERVIEW_ATTRS and
+                    opts.get("showInOverview") != "true"):
+                opts["showInOverview"] = "true"
+                attrs_changed = True
+            attr_copy["options"] = opts
+            updated_attrs.append(attr_copy)
+
+        if not logo_changed and not attrs_changed:
+            self.logger.debug("BM logo and overview visibility already up to date.")
+            return
+
+        if image_id:
+            logo_opts = {"logoType": "image", "imageId": image_id}
+        else:
+            logo_opts = {"logoType": "image", "logoUrl": self.LOGO_URL}
+
+        bm_copy = {
+            "category": bm_def.get("category", "BUSINESS_METADATA"),
+            "name": bm_def.get("name"),
+            "displayName": bm_def.get("displayName"),
+            "description": bm_def.get("description", ""),
+            "guid": bm_def.get("guid"),
+            "options": {**current_opts, **logo_opts},
+            "attributeDefs": updated_attrs,
+        }
+
+        result = self._put("/api/meta/types/typedefs", {"businessMetadataDefs": [bm_copy]})
+        if result:
+            changes = []
+            if logo_changed:
+                changes.append("logo")
+            if attrs_changed:
+                changes.append("showInOverview for key attributes")
+            self.logger.info(f"Updated BM definition: {', '.join(changes)}")
+        else:
+            self.logger.warning(
+                "Could not update BM definition options via API. "
+                "Manual fix: Atlan Admin → Governance → Custom Metadata → "
+                "TrustLogix Governance → edit each attribute → enable 'Show in overview'."
+            )
+
+    def ensure_metadata_def(self, image_id=None):
         entity_types = '["Table","View","MaterialisedView","Database","Schema","Column","DataDomain"]'
         existing = self._find_existing_bm_def()
 
@@ -210,6 +298,9 @@ class AtlanClient:
                 # Ensure DataDomain is in applicableEntityTypes
                 self._ensure_entity_types_include(existing, entity_types)
 
+                # Always try to set/update logo + showInOverview on existing BM def
+                self._update_bm_def_options(existing, image_id=image_id)
+
                 n = len(self._attr_names)
                 self.logger.info(f"BM ready with {n}/{len(self.REQUIRED_ATTRS)} resolved attributes.")
                 return
@@ -218,7 +309,7 @@ class AtlanClient:
             self._delete_bm_def(internal_name)
 
         self.logger.info("Creating new BM definition...")
-        self._create_new_bm_def(entity_types)
+        self._create_new_bm_def(entity_types, image_id=image_id)
 
     def _bm_has_entity_types(self, bm_def):
         attrs = bm_def.get("attributeDefs", [])
@@ -290,7 +381,7 @@ class AtlanClient:
             self.logger.error(f"Delete exception: {e}")
         return False
 
-    def _create_new_bm_def(self, entity_types):
+    def _create_new_bm_def(self, entity_types, image_id=None):
         base_opts = {
             "applicableEntityTypes": entity_types,
             "maxStrLength": "100000000"
@@ -306,16 +397,19 @@ class AtlanClient:
                 "options": opts
             })
 
+        # Use uploaded imageId if available, otherwise fall back to URL
+        if image_id:
+            logo_opts = {"logoType": "image", "imageId": image_id}
+        else:
+            logo_opts = {"logoType": "image", "logoUrl": self.LOGO_URL}
+
         payload = {
             "businessMetadataDefs": [{
                 "category": "BUSINESS_METADATA",
                 "name": self.CM_NAME,
                 "displayName": "TrustLogix Governance",
                 "description": "Security risk and access governance metadata from TrustLogix.",
-                "options": {
-                    "logoType": "image",
-                    "logoUrl": self.LOGO_URL,
-                },
+                "options": logo_opts,
                 "attributeDefs": attr_defs
             }]
         }

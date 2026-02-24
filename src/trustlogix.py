@@ -1,230 +1,326 @@
 import requests
 import logging
 import os
-import json
-import time
+import re
+
 
 class TrustLogixClient:
+    SUPPORTED_PLATFORMS = ['snowflake', 'databricks']
+
+    # --- TESTING CONSTRAINTS ---
+    DATABASE_FILTER = ["TLX_TELCO", "HEALTH_CARE", "CP_HEALTHCARE_DB"]
+    ACCOUNT_FILTER = ["Health care services", "GlobalConnect Telco"]
+    # --------------------------
+
+    # Schema objectType fallback order per spec §2
+    SCHEMA_OBJECT_TYPES = ["DATABASE_SCHEMA", "SCHEMA", "DATA_SCHEMA"]
+
     def __init__(self, tenant_id):
         self.tenant_id = tenant_id
         self.logger = logging.getLogger("TrustLogixClient")
-        
         self.base_url = os.getenv("TRUSTLOGIX_BASE_URL", "").rstrip('/')
-        if not self.base_url:
-             raise ValueError("TRUSTLOGIX_BASE_URL is missing.")
-
+        self.session = requests.Session()
         self.token = self._authenticate()
-        
-        self.headers = {
+
+        self.session.headers.update({
             "Authorization": f"Bearer {self.token}",
             "tenantid": self.tenant_id,
             "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        
-        self.TIMEOUT = 5
+            "User-Agent": "Mozilla/5.0",
+            "X-Requested-With": "XMLHttpRequest"
+        })
+
+        self._refresh_xsrf()
+        self.TIMEOUT = 60
+
+    def _refresh_xsrf(self):
+        """Refresh XSRF token from session cookies before POST requests."""
+        xsrf = self.session.cookies.get('XSRF-TOKEN')
+        if xsrf:
+            self.session.headers.update({'X-XSRF-TOKEN': xsrf})
 
     def _authenticate(self):
-        method = os.getenv("AUTH_METHOD", "credentials")
-        
-        if method == "bearer":
-            token = os.getenv("TRUSTLOGIX_API_KEY")
+        """Support both bearer token and username/password authentication (spec §2)."""
+        auth_method = os.getenv("AUTH_METHOD", "credentials").lower()
+
+        if auth_method == "bearer":
+            token = os.getenv("TRUSTLOGIX_API_KEY", "")
             if not token:
-                raise ValueError("Auth method is 'bearer' but API Key is missing.")
+                raise ValueError("AUTH_METHOD=bearer but TRUSTLOGIX_API_KEY is empty.")
+            self.logger.info("Authenticated via existing Bearer token.")
             return token
 
-        elif method == "credentials":
-            username = os.getenv("CLIENT_ID")
-            password = os.getenv("CLIENT_SECRET")
-            
-            login_url = f"{self.base_url}/api/login"
-            params = {"userType": "TENANT_USER"}
-            
-            login_headers = {
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0",
-                "Origin": self.base_url,
-                "Referer": f"{self.base_url}/login"
-            }
-            
-            payload = {"loginId": username, "password": password}
-            
-            self.logger.info(f"Logging in to {login_url}...")
-            try:
-                response = requests.post(login_url, params=params, json=payload, headers=login_headers, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-                
-                if "data" in data and "token" in data["data"]:
-                    return data["data"]["token"]
-                return data["token"]
-            except Exception as e:
-                self.logger.error(f"Login failed: {str(e)}")
-                raise
-
-        return ""
+        # Username/Password flow
+        login_url = f"{self.base_url}/api/login"
+        payload = {
+            "loginId": os.getenv("CLIENT_ID"),
+            "password": os.getenv("CLIENT_SECRET")
+        }
+        try:
+            res = self.session.post(
+                login_url,
+                params={"userType": "TENANT_USER"},
+                json=payload,
+                timeout=20
+            )
+            res.raise_for_status()
+            data = res.json()
+            token = data.get("token") or data.get("data", {}).get("token")
+            if not token:
+                raise ValueError("Login succeeded but no token in response.")
+            self.logger.info("Authenticated via username/password.")
+            return token
+        except Exception as e:
+            self.logger.error(f"TrustLogix Login Error: {e}")
+            raise
 
     def get_all_accounts(self):
-        endpoint = f"{self.base_url}/api/account"
-        params = {
-            "status": "Active",
-            "page_size": 1000,
-            "page_no": 1,
-            "includePolicyCount": "true"
-        }
-        
         try:
-            self.logger.info(f"Fetching accounts list...")
-            response = requests.get(endpoint, headers=self.headers, params=params, timeout=self.TIMEOUT)
-            response.raise_for_status()
-            items = response.json().get("items", [])
-            
-            target_types = ['snowflake', 'databricks']
-            filtered_items = [
-                item for item in items 
-                if item.get('type', '').lower() in target_types
-            ]
-            
-            self.logger.info(f"Found {len(items)} accounts. Processing {len(filtered_items)} valid Snowflake/Databricks accounts.")
-            return filtered_items
+            res = self.session.get(
+                f"{self.base_url}/api/account",
+                params={"status": "Active", "pageSize": 1000},
+                timeout=self.TIMEOUT
+            )
+            res.raise_for_status()
+            items = res.json().get("items", [])
+            if self.ACCOUNT_FILTER:
+                return [i for i in items if i.get('name') in self.ACCOUNT_FILTER]
+            return [i for i in items if i.get('type', '').lower() in self.SUPPORTED_PLATFORMS]
         except Exception as e:
-            self.logger.error(f"Failed to fetch accounts: {str(e)}")
+            self.logger.error(f"Failed to fetch accounts: {e}")
             return []
 
-    def get_databases(self, account_id):
-        endpoint = f"{self.base_url}/api/metadata/{account_id}/databases"
-        try:
-            response = requests.get(endpoint, headers=self.headers, timeout=self.TIMEOUT)
-            if response.status_code != 200: 
-                return []
-            return response.json()
-        except Exception:
-            return []
+    def get_data_risks(self, account_id):
+        """Fetch risks using POST /api/alert with GET fallback (spec §2).
+        
+        CRITICAL: Uses alertName as the dynamic category — no fixed buckets.
+        """
+        payload = {
+            "pageNo": 1, "pageSize": 100, "status": "OPEN",
+            "accountIds": [account_id],
+            "sortBy": "severity", "sortOrder": "DESC"
+        }
+        self._refresh_xsrf()
 
-    def get_schemas(self, account_id, database_name):
-        endpoint = f"{self.base_url}/api/metadata/{account_id}/schemas"
-        params = {"databaseNames": database_name}
+        items = []
         try:
-            response = requests.get(endpoint, headers=self.headers, params=params, timeout=self.TIMEOUT)
-            if response.status_code != 200: return []
-            return response.json()
-        except Exception:
-            return []
+            res = self.session.post(
+                f"{self.base_url}/api/alert",
+                json=payload,
+                timeout=self.TIMEOUT
+            )
+            if res.status_code == 200:
+                items = res.json().get("items", [])
+        except Exception as e:
+            self.logger.warning(f"POST /api/alert failed: {e}")
 
-    def get_tables(self, account_id, schema_fqdn):
-        endpoint = f"{self.base_url}/api/metadata/{account_id}/tables"
-        params = {"schemaNames": schema_fqdn}
-        try:
-            response = requests.get(endpoint, headers=self.headers, params=params, timeout=self.TIMEOUT)
-            if response.status_code != 200: return []
-            return response.json()
-        except Exception:
-            return []
+        # GET fallback (spec §2)
+        if not items:
+            try:
+                res_get = self.session.get(
+                    f"{self.base_url}/api/alerts",
+                    params={"accountId": account_id},
+                    timeout=self.TIMEOUT
+                )
+                if res_get.status_code == 200:
+                    items = res_get.json().get("items", [])
+            except Exception as e:
+                self.logger.warning(f"GET /api/alerts fallback failed: {e}")
+
+        mapped = []
+        for item in items:
+            # Dynamic category from alertName — spec §2 "Do NOT group into fixed buckets"
+            raw_name = item.get("alertName", "Security Alert")
+            category = raw_name  # Use the alertName directly as the category
+
+            recommendation = "Review in TrustLogix"
+            remediation = item.get("remediationMetaData")
+            if isinstance(remediation, list) and len(remediation) > 0:
+                recommendation = remediation[0].get("displayName", recommendation)
+
+            mapped.append({
+                "severity": str(item.get("severity", "MEDIUM")).upper(),
+                "category": category,
+                "raw_name": raw_name,
+                "details": item.get("description") or item.get("ticketDetails") or "Action required.",
+                "recommendation": recommendation
+            })
+        return mapped
+
+    def _normalize_entitlement(self, entry, entity_type):
+        """Normalize entitlement to {name, privileges, entity_type}.
+
+        TrustLogix API may use roleName/userName/groupName instead of name,
+        and grantedPrivileges/permissions/accessRights instead of privileges.
+        """
+        name = (entry.get("name") or
+                entry.get("roleName") or
+                entry.get("userName") or
+                entry.get("userId") or
+                entry.get("groupName") or
+                entry.get("id") or "Unknown")
+
+        privs = (entry.get("privileges") or
+                 entry.get("grantedPrivileges") or
+                 entry.get("permissions") or
+                 entry.get("accessRights") or
+                 [])
+
+        if isinstance(privs, str):
+            privs = [p.strip() for p in privs.split(",") if p.strip()]
+        elif not isinstance(privs, list):
+            privs = []
+
+        return {"name": name, "privileges": privs, "entity_type": entity_type}
 
     def get_entitlements(self, account_id, object_type, object_name):
-        endpoint = f"{self.base_url}/api/account/{account_id}/entitlements"
-        all_entitlements = []
-        page = 1
-        page_size = 100 
-        MAX_PAGES = 10 
+        """Fetch entitlements with pageSize=1000 (spec §2)."""
+        try:
+            res = self.session.get(
+                f"{self.base_url}/api/account/{account_id}/entitlements",
+                params={
+                    "objectType": object_type,
+                    "objectName": object_name,
+                    "pageSize": 1000  # spec §2: pageSize 1000 for all metadata calls
+                },
+                timeout=self.TIMEOUT
+            )
+            if res.status_code == 200:
+                data = res.json()
+                self.logger.debug(
+                    f"Entitlements raw keys for {object_type}/{object_name}: "
+                    f"{list(data.keys()) if isinstance(data, dict) else type(data).__name__}"
+                )
+                all_ents = []
+                for key, entity_type in {"roles": "ROLE", "users": "USER", "groups": "GROUP"}.items():
+                    entries = data.get(key)
+                    if entries and isinstance(entries, list):
+                        for entry in entries:
+                            if isinstance(entry, dict):
+                                all_ents.append(self._normalize_entitlement(entry, entity_type))
+                        self.logger.debug(
+                            f"  {key}: {len(entries)} entries, "
+                            f"first keys: {list(entries[0].keys()) if entries else []}"
+                        )
+                return all_ents
+        except Exception as e:
+            self.logger.debug(f"Entitlements fetch failed for {object_type}/{object_name}: {e}")
+        return []
+
+    def _get_schema_entitlements(self, account_id, schema_fqn):
+        """Try multiple objectType values for schema entitlements (spec §2).
         
-        while page <= MAX_PAGES:
-            params = {
-                "objectType": object_type,
-                "objectName": object_name,
-                "includeChildMetadata": "false",
-                "page": page,
-                "pageSize": page_size
-            }
-            try:
-                response = requests.get(endpoint, headers=self.headers, params=params, timeout=self.TIMEOUT)
-                if response.status_code != 200: break
-                
-                data = response.json()
-                
-                # Extract and tag roles
-                if "roles" in data:
-                    for r in data["roles"]:
-                        r["entity_type"] = "ROLE"
-                        all_entitlements.append(r)
-
-                # Extract and tag users
-                if "users" in data:
-                    for u in data["users"]:
-                        u["entity_type"] = "USER"
-                        all_entitlements.append(u)
-
-                # Extract and tag groups
-                if "groups" in data:
-                    for g in data["groups"]:
-                        g["entity_type"] = "GROUP"
-                        all_entitlements.append(g)
-
-                if not all_entitlements and page == 1: break
-                
-                if page >= data.get("totalPages", 0):
-                    break
-                page += 1
-                
-            except Exception:
-                break
-        
-        return {"entitlements": all_entitlements}
+        Tries DATABASE_SCHEMA, SCHEMA, and DATA_SCHEMA to ensure compatibility
+        across TrustLogix platform versions.
+        """
+        for obj_type in self.SCHEMA_OBJECT_TYPES:
+            ents = self.get_entitlements(account_id, obj_type, schema_fqn)
+            if ents:
+                self.logger.debug(f"Schema entitlements found via objectType={obj_type}")
+                return ents
+        return []
 
     def build_hierarchy_for_account(self, account):
-        """
-        Builds the tree just for ONE account. 
-        """
         account_id = account.get('id')
-        account_name = account.get('name')
-        
-        node = {
-            "name": account_name,
-            "type": "ACCOUNT",
-            "subtype": account.get('type'),
-            "children": [],
-            "entitlements": []
-        }
-        
+        account_name = account.get('name', 'Unknown')
+        risks = self.get_data_risks(account_id)
+        summary = self._summarize(risks)
+
+        access_children = []
         try:
-            dbs = self.get_databases(account_id)
-        except:
-            dbs = []
-            
-        if not isinstance(dbs, list): return node
-        
-        # TARGETED DBs
-        TARGET_DBS = ['HEALTH_CARE', 'CRM', 'HEALTH_CARE_PAYMENT']
-        
-        for db in dbs:
-            try:
-                db_name = db.get('name')
-                if db_name not in TARGET_DBS: continue
-                
-                db_node = {"name": db.get('name'), "type": "DATABASE", "children": [], "entitlements": []}
-                # Fetch DB Entitlements
-                db_node["entitlements"] = self.get_entitlements(account_id, "DATABASE", db.get('name')).get("entitlements", [])
-                
-                schemas = self.get_schemas(account_id, db.get('name'))
-                if isinstance(schemas, list):
-                    for schema in schemas:
+            res = self.session.get(
+                f"{self.base_url}/api/metadata/{account_id}/databases",
+                params={"pageSize": 1000},
+                timeout=self.TIMEOUT
+            )
+            res.raise_for_status()
+            dbs = res.json()
+
+            if isinstance(dbs, list):
+                for db in dbs:
+                    db_name = db.get('name')
+                    if not db_name:
+                        continue
+
+                    # Apply testing database filter
+                    if self.DATABASE_FILTER and db_name.upper() not in [x.upper() for x in self.DATABASE_FILTER]:
+                        continue
+
+                    self.logger.info(f"Scanning DB: {db_name} in {account_name}")
+                    db_node = {
+                        "name": db_name, "type": "DATABASE", "children": [],
+                        "entitlements": self.get_entitlements(account_id, "DATABASE", db_name)
+                    }
+
+                    try:
+                        sch_res = self.session.get(
+                            f"{self.base_url}/api/metadata/{account_id}/schemas",
+                            params={"databaseNames": db_name, "pageSize": 1000},
+                            timeout=self.TIMEOUT
+                        )
+                        schemas = sch_res.json() if sch_res.status_code == 200 else []
+                    except Exception:
+                        schemas = []
+
+                    for sch in (schemas if isinstance(schemas, list) else []):
+                        sch_name = sch.get('name', '')
+                        sch_fqn = sch.get('fullyQualifiedName') or f"{db_name}.{sch_name}"
+
+                        # Use fallback objectType logic for schemas (spec §2)
+                        sch_node = {
+                            "name": sch_name, "type": "SCHEMA", "children": [],
+                            "entitlements": self._get_schema_entitlements(account_id, sch_fqn)
+                        }
+
                         try:
-                            sch_node = {"name": schema.get('name'), "type": "SCHEMA", "children": [], "entitlements": []}
-                            sch_node["entitlements"] = self.get_entitlements(account_id, "SCHEMA", schema.get('fullyQualifiedName')).get("entitlements", [])
-                            
-                            tables = self.get_tables(account_id, schema.get('fullyQualifiedName'))
-                            if isinstance(tables, list):
-                                for table in tables:
-                                    try:
-                                        tbl_node = {"name": table.get('name'), "type": "TABLE", "entitlements": []}
-                                        tbl_node["entitlements"] = self.get_entitlements(account_id, "TABLE", table.get('fullyQualifiedName')).get("entitlements", [])
-                                        sch_node["children"].append(tbl_node)
-                                    except: continue
-                            
-                            db_node["children"].append(sch_node)
-                        except: continue
-                
-                node["children"].append(db_node)
-            except: continue
-            
-        return node
+                            tbl_res = self.session.get(
+                                f"{self.base_url}/api/metadata/{account_id}/tables",
+                                params={"schemaNames": sch_fqn, "pageSize": 1000},
+                                timeout=self.TIMEOUT
+                            )
+                            tables = tbl_res.json() if tbl_res.status_code == 200 else []
+                        except Exception:
+                            tables = []
+
+                        for tbl in (tables if isinstance(tables, list) else []):
+                            tbl_name = tbl.get('name', '')
+                            t_fqn = tbl.get('fullyQualifiedName') or f"{sch_fqn}.{tbl_name}"
+                            sch_node["children"].append({
+                                "name": tbl_name, "type": "TABLE",
+                                "entitlements": self.get_entitlements(account_id, "TABLE", t_fqn)
+                            })
+                        db_node["children"].append(sch_node)
+                    access_children.append(db_node)
+        except Exception as e:
+            self.logger.error(f"Hierarchy error for {account_name}: {e}")
+
+        return {
+            "name": account_name, "type": "ACCOUNT",
+            "subtype": account.get('type'),
+            "risks_summary": summary,
+            "children": [
+                {"name": "Data Risks", "type": "RISKS_CONTAINER", "risks": risks, "children": []},
+                {"name": "Access Analyzer", "type": "ACCESS_CONTAINER", "children": access_children}
+            ]
+        }
+
+    def _summarize(self, risks):
+        """Build a DYNAMIC risk summary — categories come from alertName (spec §2)."""
+        summary = {
+            "total": len(risks),
+            "high": 0, "medium": 0, "low": 0,
+            "categories": {}  # Dynamic — populated from actual risk data
+        }
+        for r in risks:
+            sev = r['severity']
+            if "HIGH" in sev or "CRITICAL" in sev:
+                summary['high'] += 1
+            elif "MEDIUM" in sev:
+                summary['medium'] += 1
+            else:
+                summary['low'] += 1
+
+            cat = r['category']
+            summary['categories'][cat] = summary['categories'].get(cat, 0) + 1
+
+        return summary

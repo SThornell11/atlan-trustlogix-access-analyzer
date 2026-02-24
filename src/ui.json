@@ -3,70 +3,52 @@
     "trustlogix_base_url": {
       "type": "string",
       "title": "TrustLogix Instance URL",
-      "ui": {
-        "widget": "input",
-        "placeholder": "https://<tenant>.trustlogix.io",
-        "help": "The base URL for your specific TrustLogix instance"
-      }
+      "ui": { "widget": "input", "placeholder": "https://<tenant>.trustlogix.io" }
     },
     "trustlogix_tenant_id": {
       "type": "string",
       "title": "TrustLogix Tenant ID",
-      "ui": {
-        "widget": "input",
-        "placeholder": "e.g., 8a4884c3...",
-        "help": "Your unique TrustLogix Tenant Identifier"
+      "ui": { "widget": "input" }
+    },
+    "atlan_api_key": {
+      "type": "string",
+      "title": "Atlan API Token",
+      "ui": { 
+        "widget": "credential", 
+        "help": "Your Atlan API Token for mapping domains." 
       }
     },
     "auth_method": {
       "type": "string",
-      "title": "Authentication Method",
+      "title": "TrustLogix Auth Method",
       "default": "credentials",
       "enum": ["bearer", "credentials"],
       "enumNames": ["Existing Bearer Token", "TrustLogix Username/Password"],
-      "ui": {
-        "widget": "radio"
-      }
+      "ui": { "widget": "radio" }
     },
     "trustlogix_api_key": {
       "type": "string",
-      "title": "Bearer Token",
-      "ui": {
-        "widget": "credential",
-        "hidden": true
-      }
+      "title": "TrustLogix Bearer Token",
+      "ui": { "widget": "credential", "hidden": true }
     },
     "client_id": {
       "type": "string",
-      "title": "Username / Login ID",
-      "ui": {
-        "widget": "input",
-        "hidden": true,
-        "placeholder": "admin@example.com"
-      }
+      "title": "TrustLogix Username",
+      "ui": { "widget": "input", "hidden": true }
     },
     "client_secret": {
       "type": "string",
-      "title": "Password",
-      "ui": {
-        "widget": "credential",
-        "hidden": true
-      }
+      "title": "TrustLogix Password",
+      "ui": { "widget": "credential", "hidden": true }
     }
   },
-  "required": ["trustlogix_base_url", "trustlogix_tenant_id"],
-  "ui:order": ["trustlogix_base_url", "trustlogix_tenant_id", "auth_method", "client_id", "client_secret", "trustlogix_api_key"],
+  "required": ["trustlogix_base_url", "trustlogix_tenant_id", "atlan_api_key"],
+  "ui:order": ["trustlogix_base_url", "trustlogix_tenant_id", "atlan_api_key", "auth_method", "client_id", "client_secret", "trustlogix_api_key"],
   "dependencies": {
     "auth_method": {
       "oneOf": [
-        {
-          "properties": { "auth_method": { "const": "bearer" } },
-          "required": ["trustlogix_api_key"]
-        },
-        {
-          "properties": { "auth_method": { "const": "credentials" } },
-          "required": ["client_id", "client_secret"]
-        }
+        { "properties": { "auth_method": { "const": "bearer" } }, "required": ["trustlogix_api_key"] },
+        { "properties": { "auth_method": { "const": "credentials" } }, "required": ["client_id", "client_secret"] }
       ]
     }
   }

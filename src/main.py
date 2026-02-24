@@ -43,6 +43,7 @@ def main():
                 image_id = atlan_client.upload_images()
                 atlan_client.ensure_metadata_def(image_id=image_id)
                 atlan_client.ensure_badges()
+                atlan_client.ensure_metadata_policy()
                 atlan_client.build_tlx_tag_registry()
                 atlan_map = atlan_client.get_asset_map()
                 logger.info(f"Successfully mapped {len(atlan_map)} asset paths across connections.")

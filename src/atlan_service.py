@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import hashlib
 import requests
 import logging
 from datetime import datetime, timezone
@@ -557,6 +558,166 @@ class AtlanClient:
         }]})
         if result:
             self.logger.debug(f"Updated badge conditions for '{badge_name}'")
+
+    # ================================================================== #
+    #  PERSONA METADATA POLICY — enable sidebar visibility
+    # ================================================================== #
+    def ensure_metadata_policy(self):
+        """Ensure the Default persona has a metadata policy to view TrustLogix
+        Governance custom metadata in the asset sidebar.
+
+        Atlan denies access by default; without a policy users cannot see the
+        TrustLogix Governance section in the right-hand sidebar.
+        """
+        if not self._cm_internal_name:
+            self.logger.warning("Cannot ensure metadata policy: BM not resolved.")
+            return
+
+        persona_guid, persona_qn = self._find_default_persona()
+        if not persona_guid:
+            self.logger.warning("Could not find any Persona in Atlan.")
+            self._log_manual_policy_instructions()
+            return
+
+        self.logger.info(f"Checking TrustLogix metadata policy on persona: {persona_guid}")
+
+        if self._tlx_policy_exists(persona_guid):
+            self.logger.info("TrustLogix metadata policy already exists on Default persona.")
+            return
+
+        self._create_metadata_policy(persona_guid, persona_qn)
+
+    def _find_default_persona(self):
+        """Search for the Default persona; return (guid, qualifiedName)."""
+        data = self._post("/api/meta/search/indexsearch", {
+            "dsl": {
+                "from": 0, "size": 20,
+                "query": {"bool": {"filter": [
+                    {"terms": {"__typeName.keyword": ["Persona"]}}
+                ]}}
+            },
+            "attributes": ["name", "qualifiedName"]
+        })
+        if not data or "entities" not in data:
+            return None, None
+
+        entities = data.get("entities", [])
+        # Prefer the persona named "Default"
+        for ent in entities:
+            name = ent.get("attributes", {}).get("name", "")
+            if name.lower() == "default":
+                return ent.get("guid"), ent.get("attributes", {}).get("qualifiedName", "")
+        # Fall back to the first persona
+        if entities:
+            ent = entities[0]
+            self.logger.debug(
+                f"No 'Default' persona found; using '{ent.get('attributes',{}).get('name','?')}'"
+            )
+            return ent.get("guid"), ent.get("attributes", {}).get("qualifiedName", "")
+        return None, None
+
+    def _tlx_policy_exists(self, persona_guid):
+        """Return True if a TrustLogix metadata policy already exists on this persona."""
+        data = self._get(
+            f"/api/meta/entity/guid/{persona_guid}",
+            params={"minExtInfo": "false", "ignoreRelationships": "false"}
+        )
+        if not data:
+            return False
+        # Check referredEntities (policies show up here when relationships=true)
+        for ref in data.get("referredEntities", {}).values():
+            ref_name = ref.get("attributes", {}).get("name", "")
+            if "trustlogix" in ref_name.lower() or "tlx-view" in ref_name.lower():
+                self.logger.debug(f"Found existing TLX policy: '{ref_name}'")
+                return True
+        return False
+
+    def _get_connection_resources(self):
+        """Return a list of policyResources strings for all known connections."""
+        data = self._post("/api/meta/search/indexsearch", {
+            "dsl": {
+                "from": 0, "size": 50,
+                "query": {"bool": {"filter": [
+                    {"terms": {"__typeName.keyword": ["Connection"]}}
+                ]}}
+            },
+            "attributes": ["qualifiedName"]
+        })
+        resources = []
+        if data and "entities" in data:
+            for ent in data["entities"]:
+                qn = ent.get("attributes", {}).get("qualifiedName", "")
+                if qn:
+                    resources.append(f"entity:{qn}")
+        if not resources:
+            # Fallback: use the resource format seen in existing policies
+            resources = ["entity:default/snowflake/1768577943"]
+            self.logger.debug("No connections found; using fallback resource.")
+        self.logger.debug(f"Policy resources: {resources}")
+        return resources
+
+    def _create_metadata_policy(self, persona_guid, persona_qn):
+        """Create an AuthPolicy on the given persona granting view access to
+        TrustLogix Governance custom metadata."""
+        suffix = hashlib.md5(persona_guid.encode()).hexdigest()[:8]
+        policy_name = "TrustLogix Governance - View Custom Metadata"
+        base_qn = persona_qn.rstrip("/") if persona_qn else "default"
+        policy_qn = f"{base_qn}/metadata/tlx-view-{suffix}"
+
+        resources = self._get_connection_resources()
+
+        payload = {
+            "entities": [{
+                "typeName": "AuthPolicy",
+                "attributes": {
+                    "name": policy_name,
+                    "qualifiedName": policy_qn,
+                    "policyType": "allow",
+                    "policyCategory": "persona",
+                    "policySubCategory": "metadata",
+                    "policyServiceName": "atlas",
+                    "policyActions": [
+                        "persona-asset-read",
+                        "persona-business-update-metadata",
+                    ],
+                    "policyResources": resources,
+                    "policyConditions": [],
+                    "isPolicyEnabled": True,
+                    "policyPriority": 0,
+                },
+                "relationshipAttributes": {
+                    "accessControl": {
+                        "typeName": "Persona",
+                        "guid": persona_guid,
+                    }
+                }
+            }]
+        }
+
+        result = self._post("/api/meta/entity/bulk", payload)
+        if result:
+            self.logger.info(
+                f"Created metadata policy '{policy_name}' on Default persona — "
+                "TrustLogix Governance should now appear in the Atlan asset sidebar."
+            )
+        else:
+            self.logger.warning(
+                "Could not create metadata policy via API "
+                "(your token may not have persona admin permissions)."
+            )
+            self._log_manual_policy_instructions()
+
+    def _log_manual_policy_instructions(self):
+        self.logger.warning(
+            "Manual step needed to show TrustLogix Governance in the Atlan sidebar:\n"
+            "  1. Atlan Admin → Governance → Personas\n"
+            "  2. Click the 'Default' persona\n"
+            "  3. Policies tab → Add policy → Metadata policy\n"
+            "  4. Name: 'TrustLogix Governance - View'\n"
+            "  5. Actions: enable 'View'\n"
+            "  6. Custom metadata: select 'TrustLogix Governance'\n"
+            "  7. Assets: All assets → Save"
+        )
 
     # ------------------------------------------------------------------ #
     #  Attribute Name Resolution — matches on displayName

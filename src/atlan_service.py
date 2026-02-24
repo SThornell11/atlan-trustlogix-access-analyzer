@@ -188,26 +188,31 @@ class AtlanClient:
             return None
         try:
             headers = {"Authorization": f"Bearer {self.api_token}"}
-            # Try field names used by different Atlan versions
-            for field_name in ["file", "image", "logo"]:
+            # Correct endpoint: /api/service/images (pyatlan EndPoint.HERACLES + IMAGE_API)
+            # Fallback: /api/meta/images/upload (older instances)
+            endpoints = ["/api/service/images", "/api/meta/images/upload"]
+            for endpoint in endpoints:
                 with open(self._logo_small, "rb") as f:
-                    files = {field_name: ("trustlogix_logo_small.png", f, "image/png")}
+                    files = {"file": ("trustlogix_logo_small.png", f, "image/png")}
+                    # /api/service/images requires a 'name' form field alongside the file
+                    form_data = {"name": "trustlogix_logo_small.png"}
                     res = requests.post(
-                        f"{self.base_url}/api/meta/images/upload",
-                        headers=headers, files=files, timeout=self._TIMEOUT
+                        f"{self.base_url}{endpoint}",
+                        headers=headers, files=files, data=form_data,
+                        timeout=self._TIMEOUT
                     )
                 if res.status_code in [200, 201]:
                     data = res.json() if res.text.strip() else {}
                     img_id = (data.get("id") or data.get("imageId") or
                               data.get("guid") or data.get("imageGuid"))
                     if img_id:
-                        self.logger.info(f"Uploaded logo (field='{field_name}'), imageId: {img_id}")
+                        self.logger.info(f"Uploaded logo via {endpoint}, imageId: {img_id}")
                         self._uploaded_image_id = img_id
                         return img_id
                     self.logger.debug(f"Upload OK but no id in response: {data}")
                     return None
                 self.logger.debug(
-                    f"Logo upload (field='{field_name}') returned {res.status_code}: {res.text[:200]}"
+                    f"Logo upload to {endpoint} returned {res.status_code}: {res.text[:200]}"
                 )
         except Exception as e:
             self.logger.debug(f"Logo upload failed: {e}")
@@ -847,10 +852,21 @@ class AtlanClient:
         return {"iconType": "emoji", "emoji": self._TAG_EMOJI_FALLBACK}
 
     def _ensure_tag_has_logo(self, cdef):
-        """Update a classification typedef with the TrustLogix logo if it is missing."""
+        """Update a classification typedef with the TrustLogix logo if it is missing.
+
+        Also upgrades an existing emoji icon to the real image when an imageId
+        is available (i.e. when the first run used emoji as a fallback but a
+        later run successfully uploads the logo).
+        """
         opts = cdef.get("options") or {}
-        # Already has an icon, emoji, or image — nothing to do
-        if opts.get("iconType"):
+        current_icon_type = opts.get("iconType")
+
+        # Already has the real image — nothing to do
+        if current_icon_type == "image" and opts.get("imageId"):
+            return
+        # Has an emoji but we now have a real image — upgrade it
+        # Has no icon at all — set it
+        if current_icon_type and not (current_icon_type == "emoji" and self._uploaded_image_id):
             return
         logo_opts = self._get_tag_logo_options()
         cdef_copy = dict(cdef)

@@ -87,6 +87,7 @@ class AtlanClient:
         self._created_tags = set()
         self._tlx_tag_names = set()      # all known TLX tag hashed names
         self._domain_guid_map = {}       # domain GUID -> domain display name
+        self._uploaded_image_id = None   # imageId from successful /images/upload call
 
         # Fail-fast
         self._consecutive_403 = 0
@@ -201,6 +202,7 @@ class AtlanClient:
                               data.get("guid") or data.get("imageGuid"))
                     if img_id:
                         self.logger.info(f"Uploaded logo (field='{field_name}'), imageId: {img_id}")
+                        self._uploaded_image_id = img_id
                         return img_id
                     self.logger.debug(f"Upload OK but no id in response: {data}")
                     return None
@@ -563,35 +565,60 @@ class AtlanClient:
     #  PERSONA METADATA POLICY — enable sidebar visibility
     # ================================================================== #
     def ensure_metadata_policy(self):
-        """Ensure the Default persona has a metadata policy to view TrustLogix
+        """Ensure all user-facing personas have a metadata policy to view TrustLogix
         Governance custom metadata in the asset sidebar.
 
-        Atlan denies access by default; without a policy users cannot see the
-        TrustLogix Governance section in the right-hand sidebar.
+        Applies to ALL personas by default so every user can see the
+        TrustLogix Governance section regardless of their persona assignment.
+        Set ATLAN_PERSONA_NAME env var to target a specific persona instead.
+
+        Atlan denies metadata access by default; without a policy users cannot
+        see the TrustLogix Governance section in the right-hand sidebar.
         """
         if not self._cm_internal_name:
             self.logger.warning("Cannot ensure metadata policy: BM not resolved.")
             return
 
-        persona_guid, persona_qn = self._find_default_persona()
-        if not persona_guid:
-            self.logger.warning("Could not find any Persona in Atlan.")
+        personas = self._find_all_personas()
+        if not personas:
+            self.logger.warning("No personas found in Atlan.")
             self._log_manual_policy_instructions()
             return
 
-        self.logger.info(f"Checking TrustLogix metadata policy on persona: {persona_guid}")
+        created, already_ok, failed = 0, 0, 0
+        for p_guid, p_name, p_qn in personas:
+            if self._tlx_policy_exists(p_guid):
+                self.logger.info(f"TrustLogix metadata policy already exists on '{p_name}'.")
+                already_ok += 1
+            elif self._create_metadata_policy(p_guid, p_name, p_qn):
+                created += 1
+            else:
+                failed += 1
 
-        if self._tlx_policy_exists(persona_guid):
-            self.logger.info("TrustLogix metadata policy already exists on Default persona.")
-            return
+        if created > 0:
+            self.logger.info(
+                f"Created TrustLogix metadata policy on {created} persona(s). "
+                "TrustLogix Governance should now appear in the Atlan asset sidebar."
+            )
+        elif already_ok == len(personas):
+            self.logger.info("TrustLogix metadata policies are up to date on all personas.")
 
-        self._create_metadata_policy(persona_guid, persona_qn)
+        if failed > 0:
+            self.logger.warning(
+                f"Could not create metadata policy on {failed} persona(s) via API "
+                "(token may lack persona-admin permissions)."
+            )
+            self._log_manual_policy_instructions()
 
-    def _find_default_persona(self):
-        """Search for the Default persona; return (guid, qualifiedName)."""
+    def _find_all_personas(self):
+        """Return all Personas as list of (guid, name, qualifiedName).
+
+        If ATLAN_PERSONA_NAME env var is set, only returns personas matching
+        that name (case-insensitive). Otherwise returns all personas.
+        """
         data = self._post("/api/meta/search/indexsearch", {
             "dsl": {
-                "from": 0, "size": 20,
+                "from": 0, "size": 50,
                 "query": {"bool": {"filter": [
                     {"terms": {"__typeName.keyword": ["Persona"]}}
                 ]}}
@@ -599,22 +626,31 @@ class AtlanClient:
             "attributes": ["name", "qualifiedName"]
         })
         if not data or "entities" not in data:
-            return None, None
+            return []
 
-        entities = data.get("entities", [])
-        # Prefer the persona named "Default"
-        for ent in entities:
+        target_name = os.getenv("ATLAN_PERSONA_NAME", "").strip().lower()
+        personas = []
+        for ent in data.get("entities", []):
             name = ent.get("attributes", {}).get("name", "")
-            if name.lower() == "default":
-                return ent.get("guid"), ent.get("attributes", {}).get("qualifiedName", "")
-        # Fall back to the first persona
-        if entities:
-            ent = entities[0]
-            self.logger.debug(
-                f"No 'Default' persona found; using '{ent.get('attributes',{}).get('name','?')}'"
+            qn = ent.get("attributes", {}).get("qualifiedName", "")
+            guid = ent.get("guid", "")
+            if not guid or not name:
+                continue
+            if target_name:
+                if name.lower() == target_name:
+                    personas.append((guid, name, qn))
+            else:
+                personas.append((guid, name, qn))
+
+        if target_name and not personas:
+            self.logger.warning(
+                f"ATLAN_PERSONA_NAME='{os.getenv('ATLAN_PERSONA_NAME')}' not found in Atlan. "
+                "Check the persona name in your configuration."
             )
-            return ent.get("guid"), ent.get("attributes", {}).get("qualifiedName", "")
-        return None, None
+        if personas:
+            names = [p[1] for p in personas]
+            self.logger.info(f"Found {len(personas)} persona(s) to apply metadata policy: {names}")
+        return personas
 
     def _tlx_policy_exists(self, persona_guid):
         """Return True if a TrustLogix metadata policy already exists on this persona."""
@@ -656,9 +692,9 @@ class AtlanClient:
         self.logger.debug(f"Policy resources: {resources}")
         return resources
 
-    def _create_metadata_policy(self, persona_guid, persona_qn):
+    def _create_metadata_policy(self, persona_guid, persona_name, persona_qn):
         """Create an AuthPolicy on the given persona granting view access to
-        TrustLogix Governance custom metadata."""
+        TrustLogix Governance custom metadata. Returns True if created."""
         suffix = hashlib.md5(persona_guid.encode()).hexdigest()[:8]
         policy_name = "TrustLogix Governance - View Custom Metadata"
         base_qn = persona_qn.rstrip("/") if persona_qn else "default"
@@ -696,27 +732,24 @@ class AtlanClient:
 
         result = self._post("/api/meta/entity/bulk", payload)
         if result:
-            self.logger.info(
-                f"Created metadata policy '{policy_name}' on Default persona — "
-                "TrustLogix Governance should now appear in the Atlan asset sidebar."
-            )
-        else:
-            self.logger.warning(
-                "Could not create metadata policy via API "
-                "(your token may not have persona admin permissions)."
-            )
-            self._log_manual_policy_instructions()
+            return True
+        self.logger.debug(
+            f"Could not create metadata policy on persona '{persona_name}' via API "
+            "(token may lack persona-admin permissions)."
+        )
+        return False
 
-    def _log_manual_policy_instructions(self):
+    def _log_manual_policy_instructions(self, persona_name=None):
+        persona_ref = f"'{persona_name}'" if persona_name else "each user-facing persona"
         self.logger.warning(
-            "Manual step needed to show TrustLogix Governance in the Atlan sidebar:\n"
-            "  1. Atlan Admin → Governance → Personas\n"
-            "  2. Click the 'Default' persona\n"
-            "  3. Policies tab → Add policy → Metadata policy\n"
-            "  4. Name: 'TrustLogix Governance - View'\n"
-            "  5. Actions: enable 'View'\n"
-            "  6. Custom metadata: select 'TrustLogix Governance'\n"
-            "  7. Assets: All assets → Save"
+            f"Manual step needed to show TrustLogix Governance in the Atlan sidebar:\n"
+            f"  1. Atlan Admin → Governance → Personas\n"
+            f"  2. Open {persona_ref}\n"
+            f"  3. Policies tab → Add policy → Metadata policy\n"
+            f"  4. Name: 'TrustLogix Governance - View'\n"
+            f"  5. Actions: enable 'View'\n"
+            f"  6. Custom metadata: select 'TrustLogix Governance'\n"
+            f"  7. Assets: All assets → Save"
         )
 
     # ------------------------------------------------------------------ #
@@ -803,15 +836,43 @@ class AtlanClient:
     #  This ensures stale tags from previous scans are cleaned up
     #  without touching any non-TrustLogix tags on the asset.
     # ================================================================== #
+
+    # Emoji fallback used when image upload is unavailable (e.g. demo instances)
+    _TAG_EMOJI_FALLBACK = "🛡"
+
+    def _get_tag_logo_options(self):
+        """Return iconType/imageId (or emoji fallback) options for a TLX tag."""
+        if self._uploaded_image_id:
+            return {"iconType": "image", "imageId": self._uploaded_image_id}
+        return {"iconType": "emoji", "emoji": self._TAG_EMOJI_FALLBACK}
+
+    def _ensure_tag_has_logo(self, cdef):
+        """Update a classification typedef with the TrustLogix logo if it is missing."""
+        opts = cdef.get("options") or {}
+        # Already has an icon, emoji, or image — nothing to do
+        if opts.get("iconType"):
+            return
+        logo_opts = self._get_tag_logo_options()
+        cdef_copy = dict(cdef)
+        cdef_copy["options"] = {**opts, **logo_opts}
+        result = self._put("/api/meta/types/typedefs", {"classificationDefs": [cdef_copy]})
+        if result:
+            self.logger.info(
+                f"Updated tag logo for '{cdef.get('displayName', cdef.get('name'))}'"
+            )
+        else:
+            self.logger.debug(f"Could not update logo for tag '{cdef.get('name')}'")
+
     @staticmethod
     def _make_tag_id(category_name):
         safe = re.sub(r'[^A-Za-z0-9]+', '_', category_name).strip('_').upper()
         return f"TLX_{safe}"
 
     def build_tlx_tag_registry(self):
-        """Scan all classification typedefs and register any TLX_ tags.
+        """Scan all classification typedefs, register TLX_ tags, and ensure logos.
 
         Populates _tlx_tag_names: set of hashed names for all TrustLogix tags.
+        Also patches any existing TLX tags that are missing a logo/icon.
         Call this once during init so we know which tags to strip.
         """
         self._tlx_tag_names = set()
@@ -820,13 +881,13 @@ class AtlanClient:
             for cdef in existing.get("classificationDefs", []):
                 name = cdef.get("name", "")
                 display = cdef.get("displayName", "")
-                # Match tags we created: either name starts with TLX_
-                # or displayName starts with "TrustLogix" or "TLX"
                 if (name.startswith("TLX_") or
                         display.startswith("TrustLogix") or
                         display.startswith("TLX")):
                     self._tlx_tag_names.add(name)
                     self._created_tags.add(name)
+                    # Patch logo if missing on existing tags
+                    self._ensure_tag_has_logo(cdef)
         self.logger.info(f"TLX tag registry: {len(self._tlx_tag_names)} known tag(s)")
 
     def ensure_dynamic_tag(self, category_name):
@@ -853,7 +914,7 @@ class AtlanClient:
                 "name": tag_id,
                 "displayName": category_name,
                 "description": f"TrustLogix risk category: {category_name}",
-                "options": {"color": color}
+                "options": {"color": color, **self._get_tag_logo_options()}
             }]
         }
         result = self._post("/api/meta/types/typedefs", payload)

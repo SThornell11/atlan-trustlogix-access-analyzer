@@ -40,10 +40,19 @@
       "type": "string",
       "title": "TrustLogix Password",
       "ui": { "widget": "credential", "hidden": true }
+    },
+    "atlan_persona_name": {
+      "type": "string",
+      "title": "Atlan Persona Name (optional)",
+      "ui": {
+        "widget": "input",
+        "placeholder": "Default",
+        "help": "Name of the Atlan persona to grant TrustLogix Governance sidebar access. Leave blank to apply to all personas."
+      }
     }
   },
   "required": ["trustlogix_base_url", "trustlogix_tenant_id", "atlan_api_key"],
-  "ui:order": ["trustlogix_base_url", "trustlogix_tenant_id", "atlan_api_key", "auth_method", "client_id", "client_secret", "trustlogix_api_key"],
+  "ui:order": ["trustlogix_base_url", "trustlogix_tenant_id", "atlan_api_key", "atlan_persona_name", "auth_method", "client_id", "client_secret", "trustlogix_api_key"],
   "dependencies": {
     "auth_method": {
       "oneOf": [

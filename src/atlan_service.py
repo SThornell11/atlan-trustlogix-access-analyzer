@@ -224,16 +224,20 @@ class AtlanClient:
     # Attributes that should be pinned to the asset Overview tab
     _OVERVIEW_ATTRS = {"Total Risks", "High Severity", "Last Scanned", "Scan Status"}
 
-    def _update_bm_def_options(self, bm_def, image_id=None):
+    def _update_bm_def_options(self, bm_def):
         """Update logo + showInOverview flags on an existing BM definition via PUT.
 
-        Combines both updates into a single PUT to avoid extra round-trips.
+        BM defs always use logoUrl pointing to the CDN favicon — this is distinct
+        from the imageId upload used for tags and reliably renders in all Atlan UI
+        contexts (overview, badges, sidebar).
         Skips entirely if nothing has changed.
         """
         current_opts = bm_def.get("options") or {}
-        desired_logo = image_id or self.LOGO_URL
-        current_logo = current_opts.get("imageId") or current_opts.get("logoUrl")
-        logo_changed = current_logo != desired_logo
+
+        # BM always uses logoUrl — strip any stale imageId that may have been set
+        current_logo = current_opts.get("logoUrl")
+        stale_image_id = "imageId" in current_opts
+        logo_changed = current_logo != self.LOGO_URL or stale_image_id
 
         # Inspect existing attribute defs for missing showInOverview flags
         updated_attrs = []
@@ -252,10 +256,9 @@ class AtlanClient:
             self.logger.debug("BM logo and overview visibility already up to date.")
             return
 
-        if image_id:
-            logo_opts = {"logoType": "image", "imageId": image_id}
-        else:
-            logo_opts = {"logoType": "image", "logoUrl": self.LOGO_URL}
+        # Always logoUrl for BM — remove any stale imageId key
+        logo_opts = {"logoType": "image", "logoUrl": self.LOGO_URL}
+        clean_opts = {k: v for k, v in current_opts.items() if k != "imageId"}
 
         bm_copy = {
             "category": bm_def.get("category", "BUSINESS_METADATA"),
@@ -263,7 +266,7 @@ class AtlanClient:
             "displayName": bm_def.get("displayName"),
             "description": bm_def.get("description", ""),
             "guid": bm_def.get("guid"),
-            "options": {**current_opts, **logo_opts},
+            "options": {**clean_opts, **logo_opts},
             "attributeDefs": updated_attrs,
         }
 
@@ -282,7 +285,7 @@ class AtlanClient:
                 "TrustLogix Governance → edit each attribute → enable 'Show in overview'."
             )
 
-    def ensure_metadata_def(self, image_id=None):
+    def ensure_metadata_def(self, image_id=None):  # image_id kept for API compat, unused for BM
         entity_types = '["Table","View","MaterialisedView","Database","Schema","Column","DataDomain"]'
         existing = self._find_existing_bm_def()
 
@@ -307,7 +310,7 @@ class AtlanClient:
                 self._ensure_entity_types_include(existing, entity_types)
 
                 # Always try to set/update logo + showInOverview on existing BM def
-                self._update_bm_def_options(existing, image_id=image_id)
+                self._update_bm_def_options(existing)
 
                 n = len(self._attr_names)
                 self.logger.info(f"BM ready with {n}/{len(self.REQUIRED_ATTRS)} resolved attributes.")
@@ -317,7 +320,7 @@ class AtlanClient:
             self._delete_bm_def(internal_name)
 
         self.logger.info("Creating new BM definition...")
-        self._create_new_bm_def(entity_types, image_id=image_id)
+        self._create_new_bm_def(entity_types)
 
     def _bm_has_entity_types(self, bm_def):
         attrs = bm_def.get("attributeDefs", [])
@@ -389,7 +392,7 @@ class AtlanClient:
             self.logger.error(f"Delete exception: {e}")
         return False
 
-    def _create_new_bm_def(self, entity_types, image_id=None):
+    def _create_new_bm_def(self, entity_types):
         base_opts = {
             "applicableEntityTypes": entity_types,
             "maxStrLength": "100000000"
@@ -405,11 +408,8 @@ class AtlanClient:
                 "options": opts
             })
 
-        # Use uploaded imageId if available, otherwise fall back to URL
-        if image_id:
-            logo_opts = {"logoType": "image", "imageId": image_id}
-        else:
-            logo_opts = {"logoType": "image", "logoUrl": self.LOGO_URL}
+        # BM defs always use logoUrl — renders reliably in overview, badges, and sidebar
+        logo_opts = {"logoType": "image", "logoUrl": self.LOGO_URL}
 
         payload = {
             "businessMetadataDefs": [{
@@ -846,9 +846,19 @@ class AtlanClient:
     _TAG_EMOJI_FALLBACK = "🛡"
 
     def _get_tag_logo_options(self):
-        """Return iconType/imageId (or emoji fallback) options for a TLX tag."""
+        """Return iconType/imageId options for a TLX tag.
+
+        Uses the uploaded imageId when available. In production Atlan instances
+        users are authenticated via browser session so /api/service/images/{id}
+        serves correctly. Falls back to emoji when upload is unavailable.
+        Also sets logoUrl as a hint for renderers that support it.
+        """
         if self._uploaded_image_id:
-            return {"iconType": "image", "imageId": self._uploaded_image_id}
+            return {
+                "iconType": "image",
+                "imageId": self._uploaded_image_id,
+                "logoUrl": self.LOGO_URL,
+            }
         return {"iconType": "emoji", "emoji": self._TAG_EMOJI_FALLBACK}
 
     def _ensure_tag_has_logo(self, cdef):
@@ -861,16 +871,24 @@ class AtlanClient:
         opts = cdef.get("options") or {}
         current_icon_type = opts.get("iconType")
 
-        # Already has the real image — nothing to do
-        if current_icon_type == "image" and opts.get("imageId"):
+        # Already has the real image with the current imageId and logoUrl — nothing to do
+        if (current_icon_type == "image"
+                and opts.get("imageId") == self._uploaded_image_id
+                and opts.get("logoUrl") == self.LOGO_URL
+                and self._uploaded_image_id):
             return
         # Has an emoji but we now have a real image — upgrade it
+        # Has iconType:image but stale imageId or missing logoUrl — refresh it
         # Has no icon at all — set it
-        if current_icon_type and not (current_icon_type == "emoji" and self._uploaded_image_id):
-            return
+        if current_icon_type and not self._uploaded_image_id:
+            # No upload available and already has some icon — leave it
+            if current_icon_type != "emoji":
+                return
         logo_opts = self._get_tag_logo_options()
         cdef_copy = dict(cdef)
-        cdef_copy["options"] = {**opts, **logo_opts}
+        # Remove stale emoji/icon keys so only the new iconType fields remain
+        clean_opts = {k: v for k, v in opts.items() if k not in ("emoji", "iconType", "imageId")}
+        cdef_copy["options"] = {**clean_opts, **logo_opts}
         result = self._put("/api/meta/types/typedefs", {"classificationDefs": [cdef_copy]})
         if result:
             self.logger.info(

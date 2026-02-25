@@ -119,7 +119,7 @@ class TrustLogixClient:
         for item in items:
             # Use category field directly — dynamic, no fixed buckets
             raw_cat = item.get("category") or item.get("policyRefId") or item.get("alertName") or "Security Alert"
-            category = raw_cat.replace("_", " ").title()
+            category = raw_cat.replace("_", " ").title().replace(" It", " IT")
 
             # Map numeric severity ("1"→CRITICAL, "2"→HIGH, "3"→MEDIUM, "4"→LOW)
             sev_raw = str(item.get("severity", "4"))

@@ -7,10 +7,8 @@ import re
 class TrustLogixClient:
     SUPPORTED_PLATFORMS = ['snowflake', 'databricks']
 
-    # --- TESTING CONSTRAINTS ---
-    DATABASE_FILTER = ["TLX_TELCO", "HEALTH_CARE", "CP_HEALTHCARE_DB"]
-    ACCOUNT_FILTER = ["Health care services", "GlobalConnect Telco"]
-    # --------------------------
+    DATABASE_FILTER = []
+    ACCOUNT_FILTER = []
 
     # Schema objectType fallback order per spec §2
     SCHEMA_OBJECT_TYPES = ["DATABASE_SCHEMA", "SCHEMA", "DATA_SCHEMA"]

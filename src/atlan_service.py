@@ -76,7 +76,7 @@ class AtlanClient:
             "Authorization": f"Bearer {self.api_token}",
             "Content-Type": "application/json"
         }
-        self.CM_NAME = "TrustLogix Governance"
+        self.CM_NAME = "TrustLogix Data Access Governance"
         self.TAG_PREFIX = "TLX_"
 
         self._logo_dir = os.path.join(os.path.dirname(__file__), "assets")
@@ -263,7 +263,7 @@ class AtlanClient:
         bm_copy = {
             "category": bm_def.get("category", "BUSINESS_METADATA"),
             "name": bm_def.get("name"),
-            "displayName": bm_def.get("displayName"),
+            "displayName": self._BM_DISPLAY_NAME,
             "description": bm_def.get("description", ""),
             "guid": bm_def.get("guid"),
             "options": {**clean_opts, **logo_opts},
@@ -282,7 +282,7 @@ class AtlanClient:
             self.logger.warning(
                 "Could not update BM definition options via API. "
                 "Manual fix: Atlan Admin → Governance → Custom Metadata → "
-                "TrustLogix Governance → edit each attribute → enable 'Show in overview'."
+                "TrustLogix Data Access Governance → edit each attribute → enable 'Show in overview'."
             )
 
     def ensure_metadata_def(self, image_id=None):  # image_id kept for API compat, unused for BM
@@ -356,7 +356,7 @@ class AtlanClient:
         payload = {"businessMetadataDefs": [{
             "category": bm_def.get("category", "BUSINESS_METADATA"),
             "name": bm_def.get("name"),
-            "displayName": bm_def.get("displayName"),
+            "displayName": self._BM_DISPLAY_NAME,
             "description": bm_def.get("description", ""),
             "guid": bm_def.get("guid"),
             "attributeDefs": updated_attrs,
@@ -368,12 +368,17 @@ class AtlanClient:
         else:
             self.logger.warning("Failed to update BM typedef with DataDomain.")
 
+    # Previous display name — accepted during lookup so existing BMs are found and renamed
+    _BM_DISPLAY_NAME_OLD = "TrustLogix Governance"
+    _BM_DISPLAY_NAME = "TrustLogix Data Access Governance"
+
     def _find_existing_bm_def(self):
         data = self._get("/api/meta/types/typedefs", params={"type": "business_metadata"})
         if not data:
             return None
         for bm in data.get("businessMetadataDefs", []):
-            if bm.get("displayName") == "TrustLogix Governance":
+            dn = bm.get("displayName", "")
+            if dn in (self._BM_DISPLAY_NAME, self._BM_DISPLAY_NAME_OLD):
                 return bm
         return None
 
@@ -415,7 +420,7 @@ class AtlanClient:
             "businessMetadataDefs": [{
                 "category": "BUSINESS_METADATA",
                 "name": self.CM_NAME,
-                "displayName": "TrustLogix Governance",
+                "displayName": "TrustLogix Data Access Governance",
                 "description": "Security risk and access governance metadata from TrustLogix.",
                 "options": logo_opts,
                 "attributeDefs": attr_defs
@@ -475,7 +480,7 @@ class AtlanClient:
         bm_copy = {
             "category": bm_def.get("category", "BUSINESS_METADATA"),
             "name": bm_def.get("name"),
-            "displayName": bm_def.get("displayName"),
+            "displayName": self._BM_DISPLAY_NAME,
             "description": bm_def.get("description", ""),
             "guid": bm_def.get("guid"),
             "attributeDefs": all_attrs,
@@ -491,7 +496,7 @@ class AtlanClient:
             self.logger.error(
                 "Failed to add missing attributes. "
                 "You may need to add them manually in Atlan UI: "
-                "Go to Admin > Custom Metadata > TrustLogix Governance > Add properties: "
+                "Go to Admin > Custom Metadata > TrustLogix Data Access Governance > Add properties: "
                 + ", ".join(f"'{self.ATTR_DEFS[k][0]}' ({self.ATTR_DEFS[k][1]})" for k in missing_keys if k in self.ATTR_DEFS)
             )
 
@@ -574,11 +579,11 @@ class AtlanClient:
         Governance custom metadata in the asset sidebar.
 
         Applies to ALL personas by default so every user can see the
-        TrustLogix Governance section regardless of their persona assignment.
+        TrustLogix Data Access Governance section regardless of their persona assignment.
         Set ATLAN_PERSONA_NAME env var to target a specific persona instead.
 
         Atlan denies metadata access by default; without a policy users cannot
-        see the TrustLogix Governance section in the right-hand sidebar.
+        see the TrustLogix Data Access Governance section in the right-hand sidebar.
         """
         if not self._cm_internal_name:
             self.logger.warning("Cannot ensure metadata policy: BM not resolved.")
@@ -603,7 +608,7 @@ class AtlanClient:
         if created > 0:
             self.logger.info(
                 f"Created TrustLogix metadata policy on {created} persona(s). "
-                "TrustLogix Governance should now appear in the Atlan asset sidebar."
+                "TrustLogix Data Access Governance should now appear in the Atlan asset sidebar."
             )
         elif already_ok == len(personas):
             self.logger.info("TrustLogix metadata policies are up to date on all personas.")
@@ -699,9 +704,9 @@ class AtlanClient:
 
     def _create_metadata_policy(self, persona_guid, persona_name, persona_qn):
         """Create an AuthPolicy on the given persona granting view access to
-        TrustLogix Governance custom metadata. Returns True if created."""
+        TrustLogix Data Access Governance custom metadata. Returns True if created."""
         suffix = hashlib.md5(persona_guid.encode()).hexdigest()[:8]
-        policy_name = "TrustLogix Governance - View Custom Metadata"
+        policy_name = "TrustLogix Data Access Governance - View Custom Metadata"
         base_qn = persona_qn.rstrip("/") if persona_qn else "default"
         policy_qn = f"{base_qn}/metadata/tlx-view-{suffix}"
 
@@ -747,13 +752,13 @@ class AtlanClient:
     def _log_manual_policy_instructions(self, persona_name=None):
         persona_ref = f"'{persona_name}'" if persona_name else "each user-facing persona"
         self.logger.warning(
-            f"Manual step needed to show TrustLogix Governance in the Atlan sidebar:\n"
+            f"Manual step needed to show TrustLogix Data Access Governance in the Atlan sidebar:\n"
             f"  1. Atlan Admin → Governance → Personas\n"
             f"  2. Open {persona_ref}\n"
             f"  3. Policies tab → Add policy → Metadata policy\n"
-            f"  4. Name: 'TrustLogix Governance - View'\n"
+            f"  4. Name: 'TrustLogix Data Access Governance - View'\n"
             f"  5. Actions: enable 'View'\n"
-            f"  6. Custom metadata: select 'TrustLogix Governance'\n"
+            f"  6. Custom metadata: select 'TrustLogix Data Access Governance'\n"
             f"  7. Assets: All assets → Save"
         )
 

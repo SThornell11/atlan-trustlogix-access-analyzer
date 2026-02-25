@@ -88,59 +88,55 @@ class TrustLogixClient:
             self.logger.error(f"Failed to fetch accounts: {e}")
             return []
 
-    def get_data_risks(self, account_id):
-        """Fetch risks using POST /api/alert with GET fallback (spec §2).
-        
-        CRITICAL: Uses alertName as the dynamic category — no fixed buckets.
-        """
-        payload = {
-            "pageNo": 1, "pageSize": 100, "status": "OPEN",
-            "accountIds": [account_id],
-            "sortBy": "severity", "sortOrder": "DESC"
-        }
-        self._refresh_xsrf()
+    # TrustLogix numeric severity → standard label
+    _SEVERITY_MAP = {"1": "CRITICAL", "2": "HIGH", "3": "MEDIUM", "4": "LOW"}
 
+    def get_data_risks(self, account_id):
+        """Fetch risks via GET /api/alerts (page_no and page_size are required params).
+
+        CRITICAL: Uses category field as the dynamic category — no fixed buckets.
+        Severity is a numeric string: "1"=CRITICAL, "2"=HIGH, "3"=MEDIUM, "4"=LOW.
+        """
         items = []
         try:
-            res = self.session.post(
-                f"{self.base_url}/api/alert",
-                json=payload,
+            res = self.session.get(
+                f"{self.base_url}/api/alerts",
+                params={
+                    "accountId": account_id,
+                    "page_no": 1,
+                    "page_size": 100,
+                    "sort_by": "severity",
+                    "sort_order": "DESC",
+                },
                 timeout=self.TIMEOUT
             )
             if res.status_code == 200:
                 items = res.json().get("items", [])
         except Exception as e:
-            self.logger.warning(f"POST /api/alert failed: {e}")
-
-        # GET fallback (spec §2)
-        if not items:
-            try:
-                res_get = self.session.get(
-                    f"{self.base_url}/api/alerts",
-                    params={"accountId": account_id},
-                    timeout=self.TIMEOUT
-                )
-                if res_get.status_code == 200:
-                    items = res_get.json().get("items", [])
-            except Exception as e:
-                self.logger.warning(f"GET /api/alerts fallback failed: {e}")
+            self.logger.warning(f"GET /api/alerts failed: {e}")
 
         mapped = []
         for item in items:
-            # Dynamic category from alertName — spec §2 "Do NOT group into fixed buckets"
-            raw_name = item.get("alertName", "Security Alert")
-            category = raw_name  # Use the alertName directly as the category
+            # Use category field directly — dynamic, no fixed buckets
+            raw_cat = item.get("category") or item.get("policyRefId") or item.get("alertName") or "Security Alert"
+            category = raw_cat.replace("_", " ").title()
 
-            recommendation = "Review in TrustLogix"
-            remediation = item.get("remediationMetaData")
-            if isinstance(remediation, list) and len(remediation) > 0:
-                recommendation = remediation[0].get("displayName", recommendation)
+            # Map numeric severity ("1"→CRITICAL, "2"→HIGH, "3"→MEDIUM, "4"→LOW)
+            sev_raw = str(item.get("severity", "4"))
+            severity = self._SEVERITY_MAP.get(sev_raw, sev_raw.upper())
+
+            recommendation = item.get("policyRemediation") or "Review in TrustLogix"
+            remediation_meta = item.get("remediationMetaData")
+            if isinstance(remediation_meta, list) and len(remediation_meta) > 0:
+                first_action = remediation_meta[0].get("displayName", "")
+                if first_action and first_action not in ("View Details", "Dismiss"):
+                    recommendation = first_action
 
             mapped.append({
-                "severity": str(item.get("severity", "MEDIUM")).upper(),
+                "severity": severity,
                 "category": category,
-                "raw_name": raw_name,
-                "details": item.get("description") or item.get("ticketDetails") or "Action required.",
+                "raw_name": raw_cat,
+                "details": item.get("details") or item.get("summary") or item.get("description") or "Action required.",
                 "recommendation": recommendation
             })
         return mapped

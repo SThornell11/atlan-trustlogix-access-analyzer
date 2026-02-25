@@ -5,3 +5,6 @@ __pycache__/
 localtest.txt
 atlan_key
 atlan_key.pub
+.claude/
+*.har
+requirements-local.txt
